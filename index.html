@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>よみあげスタジオ</title>
+<style>
+:root{--bg:#f3f1ec;--panel:#fff;--ink:#1d2433;--sub:#667085;--line:#d9d5cb;--acc:#2b5fd9;--accInk:#fff;--err:#b42318}
+@media (prefers-color-scheme:dark){:root{--bg:#14171f;--panel:#1d212c;--ink:#e8eaf0;--sub:#9aa3b5;--line:#2f3545;--acc:#7da2ff;--accInk:#0e1320;--err:#ff8a80}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.7 "Hiragino Sans","Noto Sans JP",system-ui,sans-serif}
+main{max-width:640px;margin:0 auto;padding:28px 18px 60px}
+h1{font-size:1.5rem;margin:0 0 4px;letter-spacing:.04em}
+.lead{color:var(--sub);margin:0 0 22px;font-size:.92rem}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px}
+label{display:block;font-size:.85rem;color:var(--sub);margin:14px 0 4px}
+label:first-child{margin-top:0}
+select,input,textarea{width:100%;font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:9px 10px}
+textarea{min-height:150px;resize:vertical}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.row{display:flex;gap:12px}.row>div{flex:1}
+button{font:inherit;cursor:pointer;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:10px 16px}
+button.main{background:var(--acc);color:var(--accInk);border-color:var(--acc);font-weight:600}
+button:disabled{opacity:.5;cursor:wait}
+.actions{display:flex;gap:10px;margin-top:18px;flex-wrap:wrap}
+#status{min-height:1.6em;margin-top:12px;font-size:.9rem;color:var(--sub)}
+#status.err{color:var(--err)}
+audio{width:100%;margin-top:10px}
+.note{font-size:.8rem;color:var(--sub);margin-top:16px}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+<h1>よみあげスタジオ</h1>
+<p class="lead">外部の音声合成APIで読み上げます。端末の音声に依存しないので、どの環境でも同じ声です。</p>
+
+<section class="panel">
+  <label for="provider">音声サービス</label>
+  <select id="provider">
+    <option value="voicevox">VOICEVOX(無料・キー不要・日本語)</option>
+    <option value="openai">OpenAI TTS(APIキーが必要)</option>
+  </select>
+
+  <div id="keyBox" hidden>
+    <label for="apikey">OpenAI APIキー(このページのメモリ内だけで使います)</label>
+    <input id="apikey" type="password" autocomplete="off" placeholder="sk-...">
+  </div>
+
+  <div class="row">
+    <div><label for="voice">声</label><select id="voice"></select></div>
+    <div><label for="rate">速さ <span id="rateV">1.0</span>x</label>
+      <input id="rate" type="range" min="0.6" max="1.6" step="0.1" value="1"></div>
+  </div>
+
+  <label for="text">読み上げるテキスト</label>
+  <textarea id="text" maxlength="3000">こんにちは。この声は外部のAPIで作られているので、どの端末で開いても同じように聞こえます。</textarea>
+
+  <div class="actions">
+    <button class="main" id="go">読み上げる</button>
+    <a id="dl" hidden><button type="button">MP3を保存</button></a>
+  </div>
+  <div id="status" role="status"></div>
+  <audio id="player" controls hidden></audio>
+</section>
+
+<p class="note">VOICEVOXは無料のコミュニティ運営APIのため、長文や連続利用は制限されることがあります(目安は数百文字まで)。利用時は「VOICEVOX:声の名前」のクレジット表記が必要です。OpenAIのキーをブラウザから直接使うので、自分専用の環境でのみ使ってください。</p>
+</main>
+
+<script>
+const VOICES={
+  voicevox:[[3,"ずんだもん"],[2,"四国めたん"],[8,"春日部つむぎ"],[9,"波音リツ"],[10,"雨晴はう"],[11,"玄野武宏"],[13,"青山龍星"],[14,"冥鳴ひまり"],[16,"九州そら"],[20,"もち子さん"]],
+  openai:[["alloy","Alloy"],["ash","Ash"],["ballad","Ballad"],["coral","Coral"],["echo","Echo"],["fable","Fable"],["nova","Nova"],["onyx","Onyx"],["sage","Sage"],["shimmer","Shimmer"],["verse","Verse"]]
+};
+const $=id=>document.getElementById(id);
+const provider=$("provider"),voice=$("voice"),player=$("player"),dl=$("dl"),st=$("status"),go=$("go");
+
+function fillVoices(){
+  voice.innerHTML=VOICES[provider.value].map(([v,n])=>`<option value="${v}">${n}</option>`).join("");
+  $("keyBox").hidden=provider.value!=="openai";
+}
+provider.onchange=fillVoices;fillVoices();
+$("rate").oninput=e=>{$("rateV").textContent=Number(e.target.value).toFixed(1)};
+
+function say(msg,err){st.textContent=msg;st.className=err?"err":""}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+async function viaVoicevox(text){
+  const url=`https://api.tts.quest/v3/voicevox/synthesis?speaker=${voice.value}&text=${encodeURIComponent(text)}`;
+  const res=await fetch(url);
+  if(!res.ok)throw new Error("VOICEVOX APIに接続できませんでした("+res.status+")");
+  const d=await res.json();
+  if(!d.success)throw new Error("VOICEVOX APIがエラーを返しました。文章を短くして再度お試しください。");
+  for(let i=0;i<30;i++){
+    const s=await (await fetch(d.audioStatusUrl)).json();
+    if(s.isAudioError)throw new Error("音声の生成に失敗しました。");
+    if(s.isAudioReady)return {src:d.mp3StreamingUrl,dl:d.mp3DownloadUrl};
+    say("音声を生成中…");await sleep(1000);
+  }
+  throw new Error("生成に時間がかかりすぎました。文章を短くしてください。");
+}
+
+async function viaOpenAI(text){
+  const key=$("apikey").value.trim();
+  if(!key)throw new Error("OpenAI APIキーを入力してください。");
+  const res=await fetch("https://api.openai.com/v1/audio/speech",{
+    method:"POST",
+    headers:{"Content-Type":"application/json","Authorization":"Bearer "+key},
+    body:JSON.stringify({model:"gpt-4o-mini-tts",voice:voice.value,input:text,response_format:"mp3"})
+  });
+  if(!res.ok){
+    let m="";try{m=(await res.json()).error.message}catch(e){}
+    throw new Error("OpenAI APIエラー("+res.status+")"+(m?": "+m:""));
+  }
+  const url=URL.createObjectURL(await res.blob());
+  return {src:url,dl:url};
+}
+
+go.onclick=async()=>{
+  const text=$("text").value.trim();
+  if(!text){say("テキストを入力してください。",true);return}
+  go.disabled=true;dl.hidden=true;say("音声を生成中…");
+  try{
+    const r=provider.value==="voicevox"?await viaVoicevox(text):await viaOpenAI(text);
+    player.src=r.src;player.playbackRate=Number($("rate").value);
+    player.hidden=false;dl.href=r.dl;dl.download="voice.mp3";dl.target="_blank";dl.hidden=false;
+    await player.play().catch(()=>{});
+    player.playbackRate=Number($("rate").value);
+    say("再生できます。");
+  }catch(e){say(e.message||"エラーが発生しました。",true)}
+  go.disabled=false;
+};
+player.onplay=()=>{player.playbackRate=Number($("rate").value)};
+</script>
+</body>
+</html>
