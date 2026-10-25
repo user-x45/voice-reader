@@ -33,19 +33,16 @@ audio{width:100%;margin-top:10px}
 <body>
 <main>
 <h1>よみあげスタジオ</h1>
-<p class="lead">外部の音声合成APIで読み上げます。端末の音声に依存しないので、どの環境でも同じ声です。</p>
+<p class="lead">外部の音声合成サービスで読み上げます。端末の音声に依存しないので、どの環境でも同じ声です。</p>
 
 <section class="panel">
   <label for="provider">音声サービス</label>
   <select id="provider">
-    <option value="voicevox">VOICEVOX(無料・キー不要・日本語)</option>
-    <option value="openai">OpenAI TTS(APIキーが必要)</option>
+    <option value="voicevox">VOICEVOX(日本語キャラ声)</option>
+    <option value="se">StreamElements(Amazon Polly・日英など)</option>
+    <option value="google">Google翻訳の音声(言語別)</option>
+    <option value="tiktok">TikTok系(コミュニティAPI)</option>
   </select>
-
-  <div id="keyBox" hidden>
-    <label for="apikey">OpenAI APIキー(このページのメモリ内だけで使います)</label>
-    <input id="apikey" type="password" autocomplete="off" placeholder="sk-...">
-  </div>
 
   <div class="row">
     <div><label for="voice">声</label><select id="voice"></select></div>
@@ -64,20 +61,21 @@ audio{width:100%;margin-top:10px}
   <audio id="player" controls hidden></audio>
 </section>
 
-<p class="note">VOICEVOXは無料のコミュニティ運営APIのため、長文や連続利用は制限されることがあります(目安は数百文字まで)。利用時は「VOICEVOX:声の名前」のクレジット表記が必要です。OpenAIのキーをブラウザから直接使うので、自分専用の環境でのみ使ってください。</p>
+<p class="note">すべてAPIキー不要の公開サービスです。非公式・無料のものが多く、長文や連続利用は制限されたり、予告なく止まったりすることがあります。長い文章は自動で分割して順に再生します。VOICEVOXは「VOICEVOX:声の名前」のクレジット表記が必要です。</p>
 </main>
 
 <script>
 const VOICES={
   voicevox:[[3,"ずんだもん"],[2,"四国めたん"],[8,"春日部つむぎ"],[9,"波音リツ"],[10,"雨晴はう"],[11,"玄野武宏"],[13,"青山龍星"],[14,"冥鳴ひまり"],[16,"九州そら"],[20,"もち子さん"]],
-  openai:[["alloy","Alloy"],["ash","Ash"],["ballad","Ballad"],["coral","Coral"],["echo","Echo"],["fable","Fable"],["nova","Nova"],["onyx","Onyx"],["sage","Sage"],["shimmer","Shimmer"],["verse","Verse"]]
+  se:[["Mizuki","Mizuki(日本語・女性)"],["Takumi","Takumi(日本語・男性)"],["Brian","Brian(英・男性)"],["Amy","Amy(英・女性)"],["Emma","Emma(英・女性)"],["Joanna","Joanna(米・女性)"],["Matthew","Matthew(米・男性)"],["Justin","Justin(米・少年)"],["Ivy","Ivy(米・少女)"],["Salli","Salli(米・女性)"]],
+  google:[["ja","日本語"],["en","English"],["zh-CN","中文"],["ko","한국어"],["fr","Français"],["de","Deutsch"],["es","Español"]],
+  tiktok:[["jp_001","日本語・女性1"],["jp_003","日本語・女性2"],["jp_005","日本語・女性3"],["jp_006","日本語・男性"],["en_us_001","英語・女性"],["en_us_006","英語・男性1"],["en_us_007","英語・男性2"],["en_uk_001","英(UK)・男性"],["en_au_001","英(豪)・女性"]]
 };
 const $=id=>document.getElementById(id);
 const provider=$("provider"),voice=$("voice"),player=$("player"),dl=$("dl"),st=$("status"),go=$("go");
 
 function fillVoices(){
   voice.innerHTML=VOICES[provider.value].map(([v,n])=>`<option value="${v}">${n}</option>`).join("");
-  $("keyBox").hidden=provider.value!=="openai";
 }
 provider.onchange=fillVoices;fillVoices();
 $("rate").oninput=e=>{$("rateV").textContent=Number(e.target.value).toFixed(1)};
@@ -100,37 +98,62 @@ async function viaVoicevox(text){
   throw new Error("生成に時間がかかりすぎました。文章を短くしてください。");
 }
 
-async function viaOpenAI(text){
-  const key=$("apikey").value.trim();
-  if(!key)throw new Error("OpenAI APIキーを入力してください。");
-  const res=await fetch("https://api.openai.com/v1/audio/speech",{
-    method:"POST",
-    headers:{"Content-Type":"application/json","Authorization":"Bearer "+key},
-    body:JSON.stringify({model:"gpt-4o-mini-tts",voice:voice.value,input:text,response_format:"mp3"})
-  });
-  if(!res.ok){
-    let m="";try{m=(await res.json()).error.message}catch(e){}
-    throw new Error("OpenAI APIエラー("+res.status+")"+(m?": "+m:""));
+function chunk(t,n){
+  const parts=t.split(/(?<=[。！？!?.\n])/),out=[];let cur="";
+  for(let p of parts){
+    while(p.length>n){if(cur){out.push(cur);cur=""}out.push(p.slice(0,n));p=p.slice(n)}
+    if((cur+p).length>n){out.push(cur);cur=p}else cur+=p;
   }
-  const url=URL.createObjectURL(await res.blob());
-  return {src:url,dl:url};
+  if(cur.trim())out.push(cur);
+  return out.map(x=>x.trim()).filter(Boolean);
 }
+
+async function viaGet(urlOf,n){
+  const srcs=[];
+  for(const c of chunk($("text").value.trim(),n)){
+    const u=urlOf(c);
+    try{const r=await fetch(u);if(!r.ok)throw 0;srcs.push(URL.createObjectURL(await r.blob()))}
+    catch(e){srcs.push(u)}
+  }
+  return {srcs};
+}
+const viaSE=()=>viaGet(c=>`https://api.streamelements.com/kappa/v2/speech?voice=${voice.value}&text=${encodeURIComponent(c)}`,300);
+const viaGoogle=()=>viaGet(c=>`https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${voice.value}&q=${encodeURIComponent(c)}`,180);
+
+async function viaTikTok(){
+  const srcs=[];
+  for(const c of chunk($("text").value.trim(),200)){
+    const res=await fetch("https://tiktok-tts.weilnet.workers.dev/api/generation",{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({text:c,voice:voice.value})});
+    const d=await res.json().catch(()=>null);
+    if(!res.ok||!d||!d.data)throw new Error("このAPIは現在使えないようです。別のサービスをお試しください。");
+    const bin=atob(d.data),u8=new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i);
+    srcs.push(URL.createObjectURL(new Blob([u8],{type:"audio/mpeg"})));
+  }
+  return {srcs};
+}
+
+let queue=[],qi=0;
+player.onended=()=>{if(qi<queue.length-1){qi++;player.src=queue[qi];player.play().catch(()=>{})}};
+player.onplay=()=>{player.playbackRate=Number($("rate").value)};
 
 go.onclick=async()=>{
   const text=$("text").value.trim();
   if(!text){say("テキストを入力してください。",true);return}
   go.disabled=true;dl.hidden=true;say("音声を生成中…");
   try{
-    const r=provider.value==="voicevox"?await viaVoicevox(text):await viaOpenAI(text);
-    player.src=r.src;player.playbackRate=Number($("rate").value);
-    player.hidden=false;dl.href=r.dl;dl.download="voice.mp3";dl.target="_blank";dl.hidden=false;
+    const f={voicevox:async()=>{const r=await viaVoicevox(text);return {srcs:[r.src],dl:r.dl}},se:viaSE,google:viaGoogle,tiktok:viaTikTok}[provider.value];
+    const r=await f();
+    queue=r.srcs;qi=0;player.src=queue[0];player.hidden=false;
+    const d=r.dl||(queue.length===1&&queue[0].startsWith("blob:")?queue[0]:null);
+    if(d){dl.href=d;dl.download="voice.mp3";dl.target="_blank";dl.hidden=false}
     await player.play().catch(()=>{});
-    player.playbackRate=Number($("rate").value);
     say("再生できます。");
   }catch(e){say(e.message||"エラーが発生しました。",true)}
   go.disabled=false;
 };
-player.onplay=()=>{player.playbackRate=Number($("rate").value)};
 </script>
 </body>
 </html>
